@@ -1,0 +1,30 @@
+name: Game lines + injuries
+
+# Every 30 minutes, 9 AM - midnight Central: current DraftKings moneyline/spread/total and
+# ESPN's injury report for today's and tomorrow's games -> the Live* display fields on Games.
+# Never touches the morning's official fields (ML, Spread, Total, Absences).
+on:
+  schedule:
+    - cron: "5,35 15-23 * * *"   # 9:05 AM - 5:35 PM CST
+    - cron: "5,35 0-5 * * *"     # 6:05 PM - 11:35 PM CST
+  workflow_dispatch:
+
+concurrency:
+  group: game-feed
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Lines + injuries
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python game_feed.py

@@ -34,6 +34,9 @@ F = {  # Games field IDs
 PLAYERS = "tblQxQCXYDVlBW8Lc"  # Player Minutes (one row per player prop)
 PF = {"entry": "fld3rcrQwPCXYQOzh", "game": "fldthRq1R9DOPrfCF", "player": "fldq7B2ep7hQpuR1O",
       "prop": "fldcKI185ES3rvchN", "live": "fldtT7lyu5mEDyM3K", "min": "fldBvfIY0H8sy1JBs"}
+PAPER = "tblChusq3thgGio20"  # Paper Bets
+BF = {"game": "fldzJIPoqpU2y4Lpx", "line": "fldOgkzsYpbPGh97E", "odds": "fldcjwwN0UiSFITGo", "stake": "fldiItuHztPbZZnE9",
+      "result": "fldYtKCYZb6V0rnAD", "profit": "fld9L9RiSusoapVWi", "entry": "fldZVfNucLSNQchil", "notes": "fld1SbkfXzrfQXqEs"}
 SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 UA = {"User-Agent": "Mozilla/5.0 (cvpm-pull live scores)", "Accept": "application/json"}
@@ -131,6 +134,40 @@ def box_stats(event_id):
     return out
 
 
+def grade_props(bt, game, box):
+    """Grade pending over bets on player props from the final box score."""
+    try:
+        bets = bt.pending_prop_bets(game)
+    except Exception as ex:  # noqa: BLE001
+        log("could not read pending bets", game, ex)
+        return
+    ups = []
+    for rid, f in bets:
+        entry = f.get(BF["entry"]) or ""
+        parts = entry.split(" ", 1)
+        if len(parts) < 2:
+            continue
+        name_prop = parts[1].rsplit(" ", 1)
+        if len(name_prop) < 2 or name_prop[0] not in box or name_prop[1] not in box[name_prop[0]]:
+            log("can't grade", entry, "- player/prop not in box score")
+            continue
+        stat, line = box[name_prop[0]][name_prop[1]], f.get(BF["line"])
+        stake, odds = f.get(BF["stake"]) or 0, f.get(BF["odds"]) or 0
+        if line is None or not odds:
+            continue
+        if stat > line:
+            res, profit = "Win", round(stake * (odds / 100 if odds > 0 else 100 / abs(odds)), 2)
+        elif stat < line:
+            res, profit = "Loss", -stake
+        else:
+            res, profit = "Push", 0
+        note = (f.get(BF["notes"]) or "").rstrip() + f"\nGraded by nba-live: final {name_prop[1]} {stat} vs {line}."
+        ups.append({"id": rid, "fields": {BF["result"]: res, BF["profit"]: profit, BF["notes"]: note.strip()}})
+        log(f"graded {entry}: {stat} vs {line} -> {res} {profit:+.2f}")
+    if ups:
+        bt.update(ups)
+
+
 class Airtable:
     def __init__(self, token, table=GAMES):
         self.url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
@@ -183,6 +220,12 @@ class Airtable:
             if not offset:
                 return out
 
+    def pending_prop_bets(self, game):
+        """Paper Bets still Pending for this game that point at a Player Minutes prop row."""
+        params = {"filterByFormula": f"AND({{Game}}='{game}', {{Result}}='Pending', {{Prop Entry}}!='')",
+                  "pageSize": 100, "returnFieldsByFieldId": "true", "fields[]": list(BF.values())}
+        return [(r["id"], r["fields"]) for r in self._req("GET", params=params)["records"]]
+
     def update(self, updates):
         for i in range(0, len(updates), 10):
             self._req("PATCH", json={"records": updates[i:i + 10]})
@@ -200,6 +243,7 @@ def main():
         sys.exit("AIRTABLE_TOKEN is not set")
     at = Airtable(TOKEN) if TOKEN else None
     pt = Airtable(TOKEN, PLAYERS) if TOKEN else None
+    bt = Airtable(TOKEN, PAPER) if TOKEN else None
     prop_rows, prop_loaded, box_done = {}, {}, set()
 
     started = time.time()
@@ -269,6 +313,8 @@ def main():
                     hit[1], hit[2] = st[prop], st["min"]
             if e["state"] == "post":
                 box_done.add(e["name"])
+                if bt and not args.dry_run:
+                    grade_props(bt, e["name"], box)
             if args.dry_run and not pt:
                 some = sorted(box.items(), key=lambda kv: -kv[1]["Points"])[:3]
                 log(e["name"], "box:", ", ".join(f"{k} {v['Points']}p {v['Rebounds']}r {v['Assists']}a" for k, v in some))

@@ -31,6 +31,10 @@ F = {  # Games field IDs
     "clock": "fldIb6WUD2CLnJwlI",
     "updated": "fldWIv4Fzq2MYl2KD",
 }
+PLAYERS = "tblQxQCXYDVlBW8Lc"  # Player Minutes (one row per player prop)
+PF = {"entry": "fld3rcrQwPCXYQOzh", "game": "fldthRq1R9DOPrfCF", "player": "fldq7B2ep7hQpuR1O",
+      "prop": "fldcKI185ES3rvchN", "live": "fldtT7lyu5mEDyM3K", "min": "fldBvfIY0H8sy1JBs"}
+SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 UA = {"User-Agent": "Mozilla/5.0 (cvpm-pull live scores)", "Accept": "application/json"}
 TEAM_MAP = {"WAS": "WSH", "GS": "GSW", "NY": "NYK", "NO": "NOP", "SA": "SAS", "UTAH": "UTA", "PHO": "PHX"}
@@ -87,6 +91,7 @@ def events_for(day):
         teams = {c["homeAway"]: c for c in comp["competitors"]}
         st = ev.get("status", {})
         out.append({
+            "id": ev["id"],
             "name": f"{day.isoformat()} {tri(teams['away']['team']['abbreviation'])} @ {tri(teams['home']['team']['abbreviation'])}",
             "state": st.get("type", {}).get("state"),
             "away": int(teams["away"].get("score") or 0),
@@ -97,9 +102,38 @@ def events_for(day):
     return out, sb is not None
 
 
+def box_stats(event_id):
+    """player name -> {Points, Rebounds, Assists, PRA, Threes, min} from ESPN's live box score."""
+    try:
+        r = requests.get(SUMMARY, params={"event": event_id}, headers=UA, timeout=20)
+        r.raise_for_status()
+        teams = r.json().get("boxscore", {}).get("players", [])
+    except Exception as ex:  # noqa: BLE001
+        log("box score fetch failed", event_id, ex)
+        return None
+    out = {}
+    for t in teams:
+        for block in t.get("statistics", []):
+            keys = block.get("keys", [])
+            for a in block.get("athletes", []):
+                st = dict(zip(keys, a.get("stats") or []))
+                if not st:
+                    continue
+                def n(k):
+                    try:
+                        return int(str(st.get(k, "0")).split("-")[0] or 0)
+                    except ValueError:
+                        return 0
+                pts, reb, ast = n("points"), n("rebounds"), n("assists")
+                out[a["athlete"]["displayName"]] = {
+                    "Points": pts, "Rebounds": reb, "Assists": ast, "PRA": pts + reb + ast,
+                    "Threes": n("threePointFieldGoalsMade-threePointFieldGoalsAttempted"), "min": n("minutes")}
+    return out
+
+
 class Airtable:
-    def __init__(self, token):
-        self.url = f"https://api.airtable.com/v0/{BASE_ID}/{GAMES}"
+    def __init__(self, token, table=GAMES):
+        self.url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
         self.s = requests.Session()
         self.s.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -133,6 +167,22 @@ class Airtable:
             if not offset:
                 return out
 
+    def props_for(self, game):
+        """(player, prop) -> [record id, live stat, live min] for one game's prop rows."""
+        out, offset = {}, None
+        while True:
+            params = {"filterByFormula": f"{{Game}}='{game}'", "pageSize": 100, "returnFieldsByFieldId": "true",
+                      "fields[]": [PF["player"], PF["prop"], PF["live"], PF["min"]]}
+            if offset:
+                params["offset"] = offset
+            data = self._req("GET", params=params)
+            for rec in data["records"]:
+                f = rec["fields"]
+                out[(f.get(PF["player"]), f.get(PF["prop"]))] = [rec["id"], f.get(PF["live"]), f.get(PF["min"])]
+            offset = data.get("offset")
+            if not offset:
+                return out
+
     def update(self, updates):
         for i in range(0, len(updates), 10):
             self._req("PATCH", json={"records": updates[i:i + 10]})
@@ -149,6 +199,8 @@ def main():
     if not TOKEN and not args.dry_run:
         sys.exit("AIRTABLE_TOKEN is not set")
     at = Airtable(TOKEN) if TOKEN else None
+    pt = Airtable(TOKEN, PLAYERS) if TOKEN else None
+    prop_rows, prop_loaded, box_done = {}, {}, set()
 
     started = time.time()
     rows, rows_day, missing_warned = {}, None, set()
@@ -191,6 +243,38 @@ def main():
             at.update(updates)
         elif updates:
             log(f"(dry run) would update {len(updates)} rows")
+
+        # live player stats on the prop rows (in-progress games every cycle; finished games one last time)
+        p_updates = []
+        for e in events:
+            if e["state"] not in ("in", "post") or e["name"] in box_done:
+                continue
+            if pt and (e["name"] not in prop_rows or time.time() - prop_loaded.get(e["name"], 0) > 600):
+                prop_rows[e["name"]] = pt.props_for(e["name"])
+                prop_loaded[e["name"]] = time.time()
+            rows_p = prop_rows.get(e["name"]) or {}
+            if not rows_p and pt:
+                if e["state"] == "post":
+                    box_done.add(e["name"])
+                continue
+            box = box_stats(e["id"])
+            if box is None:
+                continue
+            for name, st in box.items():
+                for prop in ("Points", "Rebounds", "Assists", "PRA", "Threes"):
+                    hit = rows_p.get((name, prop))
+                    if not hit or (hit[1] == st[prop] and hit[2] == st["min"]):
+                        continue
+                    p_updates.append({"id": hit[0], "fields": {PF["live"]: st[prop], PF["min"]: st["min"]}})
+                    hit[1], hit[2] = st[prop], st["min"]
+            if e["state"] == "post":
+                box_done.add(e["name"])
+            if args.dry_run and not pt:
+                some = sorted(box.items(), key=lambda kv: -kv[1]["Points"])[:3]
+                log(e["name"], "box:", ", ".join(f"{k} {v['Points']}p {v['Rebounds']}r {v['Assists']}a" for k, v in some))
+        if p_updates and not args.dry_run:
+            pt.update(p_updates)
+            log(f"player stats: {len(p_updates)} prop rows updated")
 
         # keep going?
         now = datetime.now(timezone.utc)

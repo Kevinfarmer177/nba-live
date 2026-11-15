@@ -1,0 +1,31 @@
+name: NBA live scores
+
+# Each run polls ESPN every 30 seconds while a game is on (or tips within 40 min),
+# writes Live Away / Live Home / Live State / Live Clock to the Games rows, then exits.
+# The schedule just wakes it up every 30 minutes from 10 AM to midnight Central;
+# a run with nothing to watch exits in a few seconds.
+on:
+  schedule:
+    - cron: "*/30 16-23 * * *"   # 10:00 AM - 5:59 PM CST (16-23 UTC)
+    - cron: "*/30 0-5 * * *"     # 6:00 PM - 11:59 PM CST (00-05 UTC)
+  workflow_dispatch:
+
+concurrency:
+  group: live-scores
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Poll live scores
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python live_scores.py --interval 30 --max-minutes 345

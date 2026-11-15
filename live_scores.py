@@ -137,8 +137,8 @@ def box_stats(event_id):
     return out
 
 
-RUN_STEPS = (3,)  # TEST MODE - normal: (12, 16, 20, 25)   # alert when an unanswered run reaches each of these
-THREE_STREAK = 1  # TEST MODE - normal: 3                # alert when a player hits this many threes in a row (then each one after)
+RUN_STEPS = (9, 12, 16, 20)   # alert when an unanswered run reaches each of these
+THREE_STREAK = 3                # alert when a player hits this many threes in a row (then each one after)
 
 
 def momentum(js):

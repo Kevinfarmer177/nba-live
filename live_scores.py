@@ -209,7 +209,8 @@ def compact_box(js):
                              g("turnovers"), g("fieldGoalsMade-fieldGoalsAttempted", "0-0"),
                              g("threePointFieldGoalsMade-threePointFieldGoalsAttempted", "0-0"),
                              g("freeThrowsMade-freeThrowsAttempted", "0-0"), g("fouls"), g("plusMinus"),
-                             (a.get("reason") or "") if a.get("didNotPlay") else ""])
+                             (a.get("reason") or "") if a.get("didNotPlay") else "",
+                             1 if a.get("active") else 0])  # active = on the floor right now
         out["p"][ab] = rows
     return out
 

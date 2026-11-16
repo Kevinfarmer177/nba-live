@@ -27,7 +27,54 @@ P = {
     "entry": "fld3rcrQwPCXYQOzh", "date": "fldKhc0Pn1ozA1Sh4", "game": "fldthRq1R9DOPrfCF",
     "player": "fldq7B2ep7hQpuR1O", "team": "fldU0A3PymmiyCXfh", "prop": "fldcKI185ES3rvchN",
     "line": "fldRpbsSwIuPxQRRx", "notes": "fldPhmPZcZKEr8csA",
+    "l10hits": "fldfeDI64bZEcqO3p", "l10games": "fldOAlqQBrms2zG4c", "avg": "fldgxmqp0ut2aicYB",
 }
+GAMELOG = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{}/gamelog"
+STATKEY = {"Points": ("points",), "Rebounds": ("totalRebounds",), "Assists": ("assists",),
+           "PRA": ("points", "totalRebounds", "assists"),
+           "Threes": ("threePointFieldGoalsMade-threePointFieldGoalsAttempted",)}
+_logs = {}
+
+
+def game_log(aid, before_event):
+    """Regular-season games before today's game, newest first: list of {stat name: value}."""
+    if aid not in _logs:
+        try:
+            d = get(GAMELOG.format(aid)) or {}
+        except RuntimeError:
+            d = {}
+        rows = []
+        names = d.get("names") or []
+        for st in d.get("seasonTypes") or []:
+            if "Regular" not in (st.get("displayName") or ""):
+                continue
+            for c in st.get("categories") or []:
+                for e in c.get("events") or []:
+                    meta = (d.get("events") or {}).get(e["eventId"], {})
+                    rows.append((meta.get("gameDate", ""), e["eventId"], dict(zip(names, e["stats"]))))
+        rows.sort(reverse=True)
+        _logs[aid] = rows
+    return [r[2] for r in _logs[aid] if r[1] != before_event]
+
+
+def prop_value(stats, prop):
+    tot = 0.0
+    for k in STATKEY[prop]:
+        v = str(stats.get(k) or "0").split("-")[0]
+        try:
+            tot += float(v)
+        except ValueError:
+            return None
+    return tot
+
+
+def form(aid, event_id, prop, line):
+    """(hits over this line in the last 10, games counted, season avg) from games before today."""
+    vals = [v for v in (prop_value(g, prop) for g in game_log(aid, event_id)) if v is not None]
+    if not vals:
+        return None, 0, None
+    last = vals[:10]
+    return sum(1 for v in last if v > line), len(last), round(sum(vals) / len(vals), 1)
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 CORE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba"
 DK = 100  # ESPN's provider id for DraftKings
@@ -93,7 +140,7 @@ class Airtable:
         out, offset = {}, None
         while True:
             params = {"filterByFormula": f"IS_SAME({{Date}}, '{day}', 'day')", "pageSize": 100,
-                      "returnFieldsByFieldId": "true", "fields[]": [P["entry"], P["line"], P["notes"]]}
+                      "returnFieldsByFieldId": "true", "fields[]": [P["entry"], P["line"], P["notes"], P["l10games"]]}
             if offset:
                 params["offset"] = offset
             data = self._req("GET", params=params)
@@ -144,32 +191,40 @@ def main():
                 athletes[aid] = (a.get("displayName") or a.get("fullName"), team_by_id.get(tid.group(1)) if tid else None)
             name, team = athletes[aid]
             if name:
-                lines[(name, prop)] = (float(line), game, team, started)
+                lines[(name, prop)] = (float(line), game, team, started, aid, ev["id"])
         print(f"{game}: {sum(1 for k, v in lines.items() if v[1] == game)} lines", flush=True)
 
     stamp = datetime.now(CT).strftime("%-I:%M %p")
     if args.dry_run:
-        for (name, prop), (line, game, team, started) in sorted(lines.items())[:40]:
-            print(f"  {game} | {team} | {name} {prop} {line}")
+        for (name, prop), (line, game, team, started, aid, eid) in sorted(lines.items())[:40]:
+            h, n, avg = form(aid, eid, prop, line)
+            print(f"  {game} | {team} | {name} {prop} {line} | last {n}: {h} over | avg {avg}")
         print(f"(dry run) {len(lines)} lines")
         if args.json:
             import json
-            json.dump([dict(name=n, prop=pr, line=l, game=g, team=t, started=st) for (n, pr), (l, g, t, st) in lines.items()], open(args.json, "w"))
+            json.dump([dict(name=n, prop=pr, line=l, game=g, team=t, started=st) for (n, pr), (l, g, t, st, _a, _e) in lines.items()], open(args.json, "w"))
         return
 
     at = Airtable(TOKEN)
     have = at.existing(day.isoformat())
     creates, updates = [], []
-    for (name, prop), (line, game, team, started) in lines.items():
+    for (name, prop), (line, game, team, started, aid, eid) in lines.items():
         entry = f"{day.isoformat()} {name} {prop}"
         if entry in have:
             rid, cur = have[entry]
             old = cur.get(P["line"])
+            f = {}
             if old != line and not started:  # lines freeze at tip
                 note = (cur.get(P["notes"]) or "").rstrip()
-                updates.append({"id": rid, "fields": {P["line"]: line, P["notes"]: (note + f"\n{stamp} CT: was {old}").strip()}})
+                f.update({P["line"]: line, P["notes"]: (note + f"\n{stamp} CT: was {old}").strip()})
+            if f or cur.get(P["l10games"]) is None:  # (re)compute form vs the current line
+                h, n, avg = form(aid, eid, prop, f.get(P["line"], old if old is not None else line))
+                f.update({P["l10hits"]: h, P["l10games"]: n, P["avg"]: avg})
+            if f:
+                updates.append({"id": rid, "fields": f})
             continue
-        creates.append({P["entry"]: entry, P["date"]: day.isoformat(), P["game"]: game, P["player"]: name,
+        h, n, avg = form(aid, eid, prop, line)
+        creates.append({P["l10hits"]: h, P["l10games"]: n, P["avg"]: avg, P["entry"]: entry, P["date"]: day.isoformat(), P["game"]: game, P["player"]: name,
                         P["team"]: team or "", P["prop"]: prop, P["line"]: line,
                         P["notes"]: ("DraftKings opening line (loaded after tip)" if started else f"DraftKings line via ESPN odds feed at {stamp} CT")})
     at.write(creates, updates)

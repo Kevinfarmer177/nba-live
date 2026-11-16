@@ -20,8 +20,7 @@ F = {"entry": "fldGHQpO3R3rBr42J", "award": "fldMgowQneWlsRai7", "name": "fldSCq
      "odds": "fldFsRJnGXkNnLDoR", "first": "fldT9XsIjo3feFjQ4", "week": "fldEy8Yfd0AYgOdXn", "rank": "fld5y8OyAPqiuHmh5",
      "upd": "fldsMurP0z0tmdCgx", "hist": "fldRBbHRijwCNPqFL"}
 SEASON = 2027
-AWARDS = {2581: "MVP", 2582: "Rookie of the Year", 2583: "Defensive Player", 2584: "Most Improved",
-          2585: "6th Man", 2586: "Coach of the Year", 2587: "Clutch Player"}
+AWARDS = {2581: "MVP", 2582: "Rookie of the Year", 2585: "6th Man"}  # DPOY 2583, MIP 2584, COY 2586, Clutch 2587 available later
 TOP = 10
 CORE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba"
 UA = {"User-Agent": "Mozilla/5.0 (cvpm-pull awards)"}

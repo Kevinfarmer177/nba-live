@@ -36,3 +36,7 @@ jobs:
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
         run: python refs_totals.py || echo "refs totals step failed"
+      - name: Award race odds
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python awards.py || echo "awards step failed"

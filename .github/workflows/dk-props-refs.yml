@@ -40,3 +40,7 @@ jobs:
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
         run: python awards.py || echo "awards step failed"
+      - name: CVPM rookie race
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python roy_race.py || echo "roy race step failed"

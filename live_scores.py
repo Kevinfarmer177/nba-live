@@ -12,6 +12,7 @@ Env:   AIRTABLE_TOKEN (required), AIRTABLE_BASE_ID (optional)
 Usage: python live_scores.py [--once] [--dry-run] [--interval 30] [--max-minutes 345]
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -31,6 +32,7 @@ F = {  # Games field IDs
     "clock": "fldIb6WUD2CLnJwlI",
     "updated": "fldWIv4Fzq2MYl2KD",
     "alerts": "fldgPLpR4roghMm7F",
+    "box": "fldEtIKlXxr2p9WCz",
 }
 PLAYERS = "tblQxQCXYDVlBW8Lc"  # Player Minutes (one row per player prop)
 PF = {"entry": "fld3rcrQwPCXYQOzh", "game": "fldthRq1R9DOPrfCF", "player": "fldq7B2ep7hQpuR1O",
@@ -184,6 +186,44 @@ def momentum(js):
             else:
                 streak[who] = (0, None)
     return alerts
+
+
+def compact_box(js):
+    """Quarter line scores + every player's stat line, as compact JSON for the board."""
+    comp = (js.get("header", {}).get("competitions") or [{}])[0]
+    out = {"ls": {}, "p": {}}
+    for c in comp.get("competitors", []):
+        ab = tri(c["team"]["abbreviation"])
+        out["ls"][ab] = [int(x.get("displayValue") or 0) for x in c.get("linescores", [])]
+        out["ha" if c.get("homeAway") == "home" else "aa"] = ab
+    for t in js.get("boxscore", {}).get("players", []):
+        ab = tri(t["team"]["abbreviation"])
+        rows = []
+        for b in t.get("statistics", []):
+            keys = b.get("keys", [])
+            for a in b.get("athletes", []):
+                st = dict(zip(keys, a.get("stats") or []))
+                g = lambda k, d="0": st.get(k, d) or d  # noqa: E731
+                rows.append([a["athlete"]["displayName"], 1 if a.get("starter") else 0,
+                             g("minutes"), g("points"), g("rebounds"), g("assists"), g("steals"), g("blocks"),
+                             g("turnovers"), g("fieldGoalsMade-fieldGoalsAttempted", "0-0"),
+                             g("threePointFieldGoalsMade-threePointFieldGoalsAttempted", "0-0"),
+                             g("freeThrowsMade-freeThrowsAttempted", "0-0"), g("fouls"), g("plusMinus"),
+                             (a.get("reason") or "") if a.get("didNotPlay") else ""])
+        out["p"][ab] = rows
+    return out
+
+
+def write_box(at, row, js, dry, game):
+    if not row:
+        return
+    rid, cur = row
+    txt = json.dumps(compact_box(js), separators=(",", ":"))
+    if cur.get(F["box"]) == txt:
+        return
+    if not dry:
+        at.update([{"id": rid, "fields": {F["box"]: txt}}])
+    cur[F["box"]] = txt
 
 
 def write_alerts(at, row, found, dry, game):
@@ -368,14 +408,12 @@ def main():
                 prop_rows[e["name"]] = pt.props_for(e["name"])
                 prop_loaded[e["name"]] = time.time()
             rows_p = prop_rows.get(e["name"]) or {}
-            if not rows_p and pt:
-                if e["state"] == "post":
-                    box_done.add(e["name"])
-                continue
             box = box_stats(e["id"])
             if box is None:
                 continue
             js = box.pop("__summary__", {})
+            if at:
+                write_box(at, rows.get(e["name"]), js, args.dry_run, e["name"])
             if e["state"] == "in" and at:
                 write_alerts(at, rows.get(e["name"]), momentum(js), args.dry_run, e["name"])
             for name, st in box.items():

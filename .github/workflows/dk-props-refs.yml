@@ -5,7 +5,7 @@ name: DraftKings props + refs
 # crews from official.nba.com into Games when they're still blank.
 on:
   schedule:
-    - cron: "17 15-23 * * *"   # 9:17 AM - 5:17 PM CST
+    - cron: "17 12-23 * * *"   # 6:17 AM - 5:17 PM CST
     - cron: "17 0-3 * * *"     # 6:17 PM - 9:17 PM CST
   workflow_dispatch:
 
